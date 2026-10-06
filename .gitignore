@@ -1,0 +1,6 @@
+node_modules/
+.angular-context-graph/
+coverage/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

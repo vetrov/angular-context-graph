@@ -1,0 +1,153 @@
+{
+	"verifiedAt": "2026-10-06T19:01:24.942Z",
+	"node": "v22.23.2",
+	"tests": {
+		"command": "npm test",
+		"passed": 70,
+		"failed": 0
+	},
+	"matrix": {
+		"command": "npm run test:matrix",
+		"pairs": [
+			{
+				"angular": "20.3.33",
+				"typescript": "5.9.3",
+				"passed": 51,
+				"failed": 0
+			},
+			{
+				"angular": "21.2.25",
+				"typescript": "5.9.3",
+				"passed": 51,
+				"failed": 0
+			},
+			{
+				"angular": "22.2.1",
+				"typescript": "6.0.3",
+				"passed": 51,
+				"failed": 0
+			}
+		]
+	},
+	"workplaceHubSourceProof": {
+		"command": "node scripts/verify-demo.mjs --workspace /path/to/workplace-hub --db /path/to/index.sqlite",
+		"project": "projects/workplace-hub/tsconfig.app.json",
+		"sourceWorkspaceUnmodified": true,
+		"snapshotId": "snapshot:31bb1a9cbc37639e49435d42a62309e1",
+		"freshness": "fresh",
+		"versions": {
+			"compiler": "22.2.1",
+			"compilerCli": "22.2.1",
+			"core": "22.2.1",
+			"typescript": "6.0.3"
+		},
+		"metrics": {
+			"elapsedMs": 4317,
+			"entities": 27282,
+			"observations": 20771,
+			"rebuilt": 1,
+			"reused": 0
+		},
+		"page": "SupplierEditPage",
+		"handler": "save",
+		"templateEvidence": {
+			"logicalUri": "workspace:/projects/workplace-hub/src/app/features/suppliers/supplier-edit-page.ts",
+			"start": 2165,
+			"end": 2169,
+			"line": 67,
+			"column": 26,
+			"sourceSpan": "save"
+		},
+		"providerStatus": "selected",
+		"implementation": "SupplierFacade",
+		"path": [
+			{
+				"type": "REFERENCES",
+				"from": "save",
+				"to": "facade",
+				"targetResolution": "resolved",
+				"semantics": "reference",
+				"sourceSpan": "facade",
+				"sourceSpanTruncated": false,
+				"location": {
+					"logicalUri": "workspace:/projects/workplace-hub/src/app/features/suppliers/supplier-edit-page.ts",
+					"start": 4595,
+					"end": 4601,
+					"line": 150,
+					"column": 14
+				}
+			},
+			{
+				"type": "HAS_INJECTION_REQUEST",
+				"from": "facade",
+				"to": "InjectionRequest",
+				"targetResolution": "resolved",
+				"semantics": "declaration",
+				"sourceSpan": "readonly facade: SupplierFacade",
+				"sourceSpanTruncated": false,
+				"location": {
+					"logicalUri": "workspace:/projects/workplace-hub/src/app/features/suppliers/supplier-edit-page.ts",
+					"start": 2678,
+					"end": 2709,
+					"line": 88,
+					"column": 9
+				}
+			},
+			{
+				"type": "RESOLVES_IN",
+				"from": "InjectionRequest",
+				"to": "InjectionResolution",
+				"targetResolution": "resolved",
+				"semantics": "contextual-resolution",
+				"sourceSpan": "readonly facade: SupplierFacade",
+				"sourceSpanTruncated": false,
+				"location": {
+					"logicalUri": "workspace:/projects/workplace-hub/src/app/features/suppliers/supplier-edit-page.ts",
+					"start": 2678,
+					"end": 2709,
+					"line": 88,
+					"column": 9
+				}
+			},
+			{
+				"type": "SELECTS_PROVIDER",
+				"from": "InjectionResolution",
+				"to": "ProviderRegistration",
+				"targetResolution": "resolved",
+				"semantics": "contextual-resolution",
+				"sourceSpan": "readonly facade: SupplierFacade",
+				"sourceSpanTruncated": false,
+				"location": {
+					"logicalUri": "workspace:/projects/workplace-hub/src/app/features/suppliers/supplier-edit-page.ts",
+					"start": 2678,
+					"end": 2709,
+					"line": 88,
+					"column": 9
+				}
+			},
+			{
+				"type": "USES_CLASS",
+				"from": "ProviderRegistration",
+				"to": "SupplierFacade",
+				"targetResolution": "resolved",
+				"semantics": "declaration",
+				"sourceSpan": "@Injectable()\nexport class SupplierFacade {\n    private readonly query = new BehaviorSubject<SupplierQuery>({\n        q: '',\n        page: 1,\n    });\n    privat",
+				"sourceSpanTruncated": true,
+				"location": {
+					"logicalUri": "workspace:/projects/workplace-hub/src/app/features/suppliers/supplier-facade.ts",
+					"start": 679,
+					"end": 4921,
+					"line": 28,
+					"column": 1
+				}
+			}
+		],
+		"unrepresentedTemplateOccurrences": 402,
+		"runtimeObserved": false
+	},
+	"boundaries": [
+		"All relationship families retain partial or unsupported coverage.",
+		"The source-mode demo is local validation, not a scalability benchmark.",
+		"No global unused or runtime-execution verdict is emitted."
+	]
+}
