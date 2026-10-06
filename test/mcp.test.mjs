@@ -22,7 +22,16 @@ test('stdio MCP handshake, schema-valid query, error, explicit index and restart
 	});
 	const transport = new StdioClientTransport({
 		command: process.execPath,
-		args: [path.join(repo, 'src/cli.mjs'), 'mcp', '--workspace', root, '--db', db],
+		args: [
+			path.join(repo, 'src/cli.mjs'),
+			'mcp',
+			'--workspace',
+			root,
+			'--db',
+			db,
+			'--text-mode',
+			'receipt',
+		],
 		stderr: 'pipe',
 	});
 	const client = new Client({ name: 'acceptance-client', version: '1.0.0' });
@@ -56,7 +65,36 @@ test('stdio MCP handshake, schema-valid query, error, explicit index and restart
 			arguments: { text: 'FooComponent', kinds: ['Component'] },
 		});
 		const response = RESPONSE_SCHEMA.parse(found.structuredContent);
+		assert.ok(found.content[0].text.length < 300);
+		assert.ok(!found.content[0].text.startsWith('{'));
 		assert.ok(response.results.some((n) => n.name === 'FooComponent'));
+		const di = await client.callTool({
+			name: 'explain_injection',
+			arguments: { name: 'FooComponent' },
+		});
+		assert.equal(di.isError, undefined, JSON.stringify(di.content));
+		assert.equal(
+			RESPONSE_SCHEMA.parse(di.structuredContent).results[0].entity.name,
+			'FooComponent',
+		);
+		const compatibility = new Client({ name: 'text-compatibility-client', version: '1.0.0' });
+		try {
+			await compatibility.connect(
+				new StdioClientTransport({
+					command: process.execPath,
+					args: [path.join(repo, 'src/cli.mjs'), 'mcp', '--workspace', root, '--db', db],
+					stderr: 'ignore',
+				}),
+			);
+			const text = await compatibility.callTool({
+				name: 'find_entities',
+				arguments: { text: 'FooComponent', kinds: ['Component'] },
+			});
+			assert.deepEqual(JSON.parse(text.content[0].text), text.structuredContent);
+			assert.deepEqual(text.structuredContent.results, response.results);
+		} finally {
+			await compatibility.close();
+		}
 		const store = new GraphStore(db);
 		try {
 			const expected = new QueryService(store, root).find_entities({

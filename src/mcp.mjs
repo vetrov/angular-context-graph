@@ -4,11 +4,21 @@ import { QueryService } from './queries.mjs';
 import { indexWorkspace } from './indexer.mjs';
 import { QUERY_TOOLS, INDEX_INPUT, RESPONSE_SCHEMA, query } from './api.mjs';
 
-export function createMcpServer(store, workspace) {
+export function createMcpServer(store, workspace, { textMode = 'json' } = {}) {
+	if (!['receipt', 'json'].includes(textMode))
+		throw new Error('MCP text mode must be receipt or json.');
 	const server = new McpServer({ name: 'angular-context-graph', version: '0.1.0' });
 	const service = new QueryService(store, workspace);
-	const result = (value) => ({
-		content: [{ type: 'text', text: JSON.stringify(value) }],
+	const result = (value, args = {}) => ({
+		content: [
+			{
+				type: 'text',
+				text:
+					textMode === 'json' || args.detail === 'full'
+						? JSON.stringify(value)
+						: `${value.results.length} result(s); snapshot ${value.snapshotId ?? 'none'}; ${value.freshness.status}${value.truncated ? '; truncated (see bounds/cursor)' : ''}. Results are in structuredContent; if hidden, use detail=full or server --text-mode json.`,
+			},
+		],
 		structuredContent: value,
 	});
 	const error = (exception) => ({
@@ -31,7 +41,7 @@ export function createMcpServer(store, workspace) {
 			},
 			async (args) => {
 				try {
-					return result(query(service, name, args));
+					return result(query(service, name, args), args);
 				} catch (exception) {
 					return error(exception);
 				}
@@ -68,8 +78,8 @@ export function createMcpServer(store, workspace) {
 	);
 	return server;
 }
-export async function serveMcp(store, workspace) {
-	const server = createMcpServer(store, workspace);
+export async function serveMcp(store, workspace, options = {}) {
+	const server = createMcpServer(store, workspace, options);
 	await server.connect(new StdioServerTransport());
 	return server;
 }

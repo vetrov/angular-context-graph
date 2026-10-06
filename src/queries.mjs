@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import { workspaceId, SCHEMA_VERSION } from './model.mjs';
-import { changedInputs, hash, stableJson } from './inputs.mjs';
-import { extractorFingerprint } from './indexer.mjs';
+import { inputState, hash, stableJson } from './inputs.mjs';
+import { isCompatibleExtractor } from './indexer.mjs';
+import { compact, coverageSummary } from './query-format.mjs';
+import { explainInjection } from './injection-query.mjs';
 
 const observedUsage = new Set([
 	'CALLS',
@@ -16,10 +18,14 @@ const observedUsage = new Set([
 	'REEXPORTS_SYMBOL',
 ]);
 export class QueryService {
-	constructor(store, workspace) {
+	constructor(store, workspace, { freshnessTtlMs = 1000, now = Date.now } = {}) {
 		this.store = store;
 		this.workspace = fs.realpathSync(workspace);
 		this.workspaceId = workspaceId(this.workspace);
+		this.freshnessTtlMs = freshnessTtlMs;
+		this.now = now;
+		this.inputCheckpoint = null;
+		this.unitManifestCache = null;
 	}
 	context(options = {}) {
 		const manifest = options.snapshotId
@@ -28,13 +34,56 @@ export class QueryService {
 		if (!manifest) throw new Error('No indexed snapshot; run index first.');
 		if (manifest.workspaceId !== this.workspaceId)
 			throw new Error('Snapshot belongs to another workspace.');
-		const unitIds = options.unitIds ?? manifest.unitIds;
+		if (options.unit && options.unitIds) throw new Error('Pass unit or unitIds, not both.');
+		if (this.unitManifestCache?.snapshotId !== manifest.id)
+			this.unitManifestCache = {
+				snapshotId: manifest.id,
+				units: this.store.unitManifests(manifest.id),
+			};
+		const allUnits = this.unitManifestCache.units;
+		const namedUnit =
+			options.unit && allUnits.find((u) => u.name === options.unit || u.id === options.unit);
+		if (options.unit && !namedUnit)
+			throw new Error(`Unknown unit ${options.unit}; get_index_status lists unit names.`);
+		const defaults = allUnits.filter((u) => u.name.endsWith(':build:default'));
+		const defaultUnit =
+			options.selectDefaultUnit && !options.unit && !options.unitIds && defaults.length === 1
+				? defaults[0]
+				: null;
+		const unitIds =
+			options.unitIds ??
+			(namedUnit || defaultUnit ? [(namedUnit ?? defaultUnit).id] : manifest.unitIds);
 		if (!unitIds.length || unitIds.some((id) => !manifest.unitIds.includes(id)))
 			throw new Error('Unknown compilation unit filter.');
-		const units = this.store.unitManifests(manifest.id).filter((u) => unitIds.includes(u.id));
-		const changed = units.flatMap((u) =>
-			changedInputs(u.inputs).map((input) => ({ ...input, unitId: u.id })),
-		);
+		const units = allUnits.filter((u) => unitIds.includes(u.id));
+		const key = stableJson([manifest.id, [...unitIds].sort()]);
+		const now = this.now();
+		const cached =
+			options.freshness !== 'verify' &&
+			!options.forceFreshness &&
+			this.inputCheckpoint?.key === key &&
+			now - this.inputCheckpoint.time >= 0 &&
+			now - this.inputCheckpoint.time < this.freshnessTtlMs;
+		if (!cached) {
+			const actual = new Map();
+			const changed = units.flatMap((u) =>
+				u.inputs
+					.filter((input) => {
+						const inputKey = `${input.kind}:${input.file}`;
+						if (!actual.has(inputKey))
+							actual.set(inputKey, inputState(input.kind, input.file));
+						return actual.get(inputKey) !== input.state;
+					})
+					.map(({ kind, file }) => ({ kind, file, unitId: u.id })),
+			);
+			this.inputCheckpoint = {
+				key,
+				time: now,
+				checkedAt: new Date(now).toISOString(),
+				changed,
+			};
+		}
+		const { changed, checkedAt, time } = this.inputCheckpoint;
 		let job = this.store.latestJob(this.workspaceId);
 		if (job?.status === 'running') {
 			try {
@@ -51,7 +100,7 @@ export class QueryService {
 		if (job?.error?.length > 4000)
 			job = { ...job, error: job.error.slice(0, 4000), errorTruncated: true };
 		const historical = this.store.current(this.workspaceId)?.id !== manifest.id;
-		const outdatedExtractor = manifest.extractorFingerprint !== extractorFingerprint();
+		const outdatedExtractor = !isCompatibleExtractor(manifest.extractorFingerprint);
 		const stale =
 			changed.length > 0 ||
 			outdatedExtractor ||
@@ -62,9 +111,26 @@ export class QueryService {
 			manifest,
 			units,
 			unitIds,
+			options,
+			unitSelection: {
+				mode: namedUnit
+					? 'explicit-unit'
+					: options.unitIds
+						? 'explicit-unit-ids'
+						: defaultUnit
+							? 'default-build'
+							: 'all-indexed',
+				selected: units.map(({ id, name }) => ({ id, name })),
+				omitted: allUnits
+					.filter((u) => !unitIds.includes(u.id))
+					.map(({ id, name }) => ({ id, name })),
+			},
 			freshness: {
 				status: stale ? 'stale' : 'fresh',
-				checkedAt: new Date().toISOString(),
+				checkedAt,
+				checkMode: cached ? 'cached' : 'verified',
+				ageMs: now - time,
+				maxAgeMs: this.freshnessTtlMs,
 				historical,
 				changedInputs: changed.slice(0, 20),
 				changedInputCount: changed.length,
@@ -74,28 +140,42 @@ export class QueryService {
 		};
 	}
 	envelope(context, results, extra = {}) {
+		const full = context.options?.detail === 'full';
+		const selectedCoverage = context.manifest.coverage.filter((c) =>
+			context.unitIds.includes(c.compilationUnitId),
+		);
+		const freshness = { ...context.freshness };
+		if (!full && !context.includeJob && freshness.lastJob?.status === 'complete')
+			delete freshness.lastJob;
+		if (!full && !freshness.changedInputCount) delete freshness.changedInputs;
 		const response = {
 			schemaVersion: SCHEMA_VERSION,
+			queryVersion: 2,
 			snapshotId: context.manifest.id,
-			freshness: context.freshness,
+			freshness,
 			unitIds: context.unitIds,
-			coverage: context.manifest.coverage
-				.filter((c) => context.unitIds.includes(c.compilationUnitId))
-				.map((c) => ({
-					unitId: c.compilationUnitId,
-					familyId: c.familyId,
-					status: c.status,
-					attempted: c.attempted,
-					resolved: c.resolved,
-					candidates: c.candidates,
-					unresolved: c.unresolved,
-					unrepresented: c.unrepresented,
-					expectedPopulation: c.expectedPopulation,
-				})),
-			results: [...results],
+			unitSelection: context.unitSelection,
+			detail: full ? 'full' : 'compact',
+			coverage: full
+				? selectedCoverage.map((c) => ({
+						unitId: c.compilationUnitId,
+						familyId: c.familyId,
+						status: c.status,
+						attempted: c.attempted,
+						resolved: c.resolved,
+						candidates: c.candidates,
+						unresolved: c.unresolved,
+						unrepresented: c.unrepresented,
+						expectedPopulation: c.expectedPopulation,
+					}))
+				: coverageSummary(selectedCoverage),
+			results:
+				full || context.rawResults
+					? [...results]
+					: compact(results, { sourceSpans: context.sourceSpans }),
 			truncated: false,
 			nextCursor: null,
-			...extra,
+			...(full ? extra : compact(extra)),
 		};
 		while (JSON.stringify(response).length > 64000 && response.results.length) {
 			response.results.pop();
@@ -105,11 +185,12 @@ export class QueryService {
 		return response;
 	}
 	page(context, method, options, results, extra = {}) {
-		const limit = options.limit ?? 50;
+		const limit = options.limit ?? 20;
 		if (!Number.isInteger(limit) || limit < 1 || limit > 200)
 			throw new Error('limit must be an integer between 1 and 200');
 		const signature = hash(
 			stableJson({
+				queryVersion: 2,
 				method,
 				snapshot: context.manifest.id,
 				filters: { ...options, cursor: undefined },
@@ -174,12 +255,21 @@ export class QueryService {
 				truncated: false,
 				nextCursor: null,
 			};
-		const c = this.context(options);
+		const c = this.context({ ...options, forceFreshness: true });
+		c.includeJob = true;
+		c.rawResults = true;
+		const defaultUnits = c.units.filter((u) => u.name.endsWith(':build:default'));
 		return this.envelope(c, [
 			{
 				workspace: c.manifest.workspace,
 				createdAt: c.manifest.createdAt,
 				units: c.units.map(({ inputs, ...unit }) => unit),
+				recommendedUnitId:
+					c.units.length === 1
+						? c.units[0].id
+						: defaultUnits.length === 1
+							? defaultUnits[0].id
+							: null,
 				missingUnits: c.manifest.missingUnits,
 				analysisPolicy: c.manifest.analysisPolicy,
 				extractorVersion: c.manifest.extractorVersion,
@@ -195,40 +285,50 @@ export class QueryService {
 	}
 	find_entities(options = {}) {
 		const c = this.context(options);
-		const text = (options.text ?? '').toLowerCase();
-		const all = this.store.entities(c.manifest.id, c.unitIds);
-		const byId = new Map(all.map((n) => [n.id, n]));
-		const nodes = all.filter(
-			(n) =>
-				(!options.kinds?.length
-					? n.layer === 'declaration' || n.layer === 'context'
-					: options.kinds.includes(n.kind)) &&
-				(!options.file || n.location?.file.includes(options.file)) &&
-				(!text ||
-					[
-						n.name,
-						n.id,
-						n.publicName,
-						n.path,
-						n.selector,
-						byId.get(n.component)?.name,
-						byId.get(n.classOwner)?.name,
-						byId.get(n.owner)?.name,
-					].some((value) => value?.toLowerCase().includes(text))),
+		const limit = options.limit ?? 20;
+		if (!Number.isInteger(limit) || limit < 1 || limit > 200)
+			throw new Error('limit must be an integer between 1 and 200');
+		const { signature, offset } = this.cursor(c, 'find_entities', options);
+		const rows = this.store.searchEntities(
+			c.manifest.id,
+			c.unitIds,
+			options,
+			offset,
+			limit + 1,
 		);
-		const dedup = new Map();
-		for (const node of nodes) {
-			const prior = dedup.get(node.id);
-			if (prior) prior.unitIds.push(node.compilationUnitId);
-			else
-				dedup.set(node.id, {
-					...node,
-					ownerName: byId.get(node.owner)?.name ?? null,
-					componentName: byId.get(node.component ?? node.classOwner)?.name ?? null,
-					unitIds: [node.compilationUnitId],
-				});
+		if (offset && !rows.length) throw new Error('Cursor offset is outside the query results.');
+		const response = this.envelope(c, rows.slice(0, limit));
+		if (response.results.length && rows.length > response.results.length) {
+			response.nextCursor = Buffer.from(
+				stableJson({ signature, offset: offset + response.results.length }),
+			).toString('base64url');
+			response.truncated = true;
 		}
-		return this.page(c, 'find_entities', options, [...dedup.values()]);
+		return response;
+	}
+	cursor(context, method, options) {
+		const signature = hash(
+			stableJson({
+				queryVersion: 2,
+				method,
+				snapshot: context.manifest.id,
+				filters: { ...options, cursor: undefined },
+			}),
+		);
+		if (!options.cursor) return { signature, offset: 0 };
+		let cursor;
+		try {
+			cursor = JSON.parse(Buffer.from(options.cursor, 'base64url').toString());
+		} catch {
+			throw new Error('Invalid cursor');
+		}
+		if (
+			cursor.signature !== signature ||
+			!Number.isSafeInteger(cursor.offset) ||
+			cursor.offset < 0
+		)
+			throw new Error('Cursor does not match this snapshot and query.');
+		return { signature, offset: cursor.offset };
 	}
 	get_entity(options) {
 		const c = this.context(options);
@@ -257,6 +357,7 @@ export class QueryService {
 	}
 	get_source_evidence(options) {
 		const c = this.context(options);
+		c.sourceSpans = true;
 		let edge = this.store.observation(c.manifest.id, options.id);
 		if (!edge) {
 			const occurrence = this.entity(c, options.id)[0];
@@ -294,9 +395,12 @@ export class QueryService {
 		for (const request of requests) {
 			if (!contexts.some((ctx) => ctx.compilationUnitId === request.compilationUnitId))
 				continue;
-			const resolution = this.store
-				.resolutions(c.manifest.id, request.compilationUnitId)
-				.find((r) => r.request === request.id && r.context === options.contextId);
+			const resolution = this.store.resolution(
+				c.manifest.id,
+				request.compilationUnitId,
+				request.id,
+				options.contextId,
+			);
 			const opts = { ...options, unitIds: [request.compilationUnitId] };
 			const local = { ...c, unitIds: opts.unitIds };
 			const evidence = resolution
@@ -335,6 +439,9 @@ export class QueryService {
 			});
 		}
 		return this.envelope(c, results);
+	}
+	explain_injection(options) {
+		return explainInjection(this, options);
 	}
 	traverse(c, start, options = {}, direction = 'outgoing', target = null) {
 		const maxDepth = options.maxDepth ?? 8,

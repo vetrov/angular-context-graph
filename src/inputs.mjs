@@ -54,6 +54,22 @@ export function createInputTracker() {
 				if (typeof method !== 'function') return method;
 				return (...args) => {
 					const result = method.apply(target, args);
+					// Angular's getSourceFile can read through a closed-over filesystem,
+					// bypassing host.readFile. Validate and fingerprint the actual program text.
+					if (
+						property === 'getSourceFile' &&
+						result?.fileName &&
+						typeof result.text === 'string' &&
+						fs.existsSync(result.fileName)
+					) {
+						const bytes = fs.readFileSync(result.fileName);
+						const source = bytes.toString('utf8').replace(/^\uFEFF/, '');
+						if (source !== result.text.replace(/^\uFEFF/, ''))
+							throw new Error(
+								`Input changed while the compiler was reading it: ${result.fileName}`,
+							);
+						record('file', result.fileName, hash(bytes));
+					}
 					if (property === 'readFile' && typeof result === 'string')
 						record('file', args[0], hash(result));
 					if (['exists', 'fileExists', 'directoryExists'].includes(property))

@@ -43,6 +43,7 @@ try {
 	});
 	assert.equal(provider.results[0].status, 'selected');
 	const dependency = query(service, 'explain_dependency', {
+		detail: 'full',
 		sourceId: save.id,
 		targetId: target,
 		contextId: resolution.context,

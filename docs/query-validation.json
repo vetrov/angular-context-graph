@@ -1,0 +1,173 @@
+{
+	"verifiedAt": "2026-10-06T20:27:12.914Z",
+	"node": "v22.23.2",
+	"snapshotId": "snapshot:74c600cbce32a6c0404bbecf2a5d8cbe",
+	"unitSelection": {
+		"mode": "default-build",
+		"selected": [
+			{
+				"id": "unit:ca174b6fd099bdc6795de2e2a8dfb15e",
+				"name": "workplace-hub:build:default"
+			}
+		],
+		"omitted": [
+			{
+				"id": "unit:c9c8404f162110849e723ae58bce3bec",
+				"name": "workplace-hub:build:production"
+			},
+			{
+				"id": "unit:d81e9b6978e542e042a0d123c5bf01b5",
+				"name": "workplace-hub:build:development"
+			}
+		]
+	},
+	"measurements": [
+		{
+			"name": "explain_injection: cold",
+			"elapsedMs": 411,
+			"jsonChars": 15439,
+			"resultCount": 1,
+			"truncated": false,
+			"freshness": "stale",
+			"checkMode": "verified"
+		},
+		{
+			"name": "explain_injection: warm",
+			"elapsedMs": 149,
+			"jsonChars": 15439,
+			"resultCount": 1,
+			"truncated": false,
+			"freshness": "stale",
+			"checkMode": "cached"
+		},
+		{
+			"name": "get_index_status",
+			"elapsedMs": 6,
+			"jsonChars": 5916,
+			"resultCount": 1,
+			"truncated": false,
+			"freshness": "stale",
+			"checkMode": "verified"
+		},
+		{
+			"name": "find_entities",
+			"elapsedMs": 182,
+			"jsonChars": 3405,
+			"resultCount": 2,
+			"truncated": false,
+			"freshness": "stale",
+			"checkMode": "cached"
+		},
+		{
+			"name": "find_entities: injection requests",
+			"elapsedMs": 130,
+			"jsonChars": 8782,
+			"resultCount": 9,
+			"truncated": false,
+			"freshness": "stale",
+			"checkMode": "cached"
+		},
+		{
+			"name": "get_relationships",
+			"elapsedMs": 2,
+			"jsonChars": 16803,
+			"resultCount": 20,
+			"truncated": true,
+			"freshness": "stale",
+			"checkMode": "cached"
+		},
+		{
+			"name": "resolve_provider",
+			"elapsedMs": 5,
+			"jsonChars": 5604,
+			"resultCount": 1,
+			"truncated": false,
+			"freshness": "stale",
+			"checkMode": "verified"
+		}
+	],
+	"proof": {
+		"providedBy": "Requests",
+		"dependencies": [
+			{
+				"token": "HttpClient",
+				"status": "unresolved",
+				"location": {
+					"file": "projects/workplace-hub/src/app/features/requests/request-list.service.ts",
+					"line": 25,
+					"column": 29,
+					"start": 735,
+					"end": 753
+				}
+			},
+			{
+				"token": "ListQueryState",
+				"status": "selected",
+				"location": {
+					"file": "projects/workplace-hub/src/app/features/requests/request-list.service.ts",
+					"line": 26,
+					"column": 22,
+					"start": 776,
+					"end": 798
+				}
+			},
+			{
+				"token": "DemoContext",
+				"status": "candidate",
+				"location": {
+					"file": "projects/workplace-hub/src/app/features/requests/request-list.service.ts",
+					"line": 27,
+					"column": 32,
+					"start": 831,
+					"end": 850
+				}
+			}
+		],
+		"queryProviderStatus": "selected",
+		"listKind": "requests",
+		"sharing": "same-registration-in-same-modeled-injector",
+		"runtimeObserved": false
+	},
+	"indexRebuilt": false,
+	"databaseModified": false,
+	"interpretation": "Local query timings and JSON character counts, not model tokens or end-to-end agent latency. Stale snapshots remain usable as historical evidence.",
+	"tests": {
+		"command": "npm test",
+		"passed": 75,
+		"failed": 0
+	},
+	"matrix": {
+		"command": "npm run test:matrix",
+		"pairs": [
+			{
+				"angular": "20.3.33",
+				"typescript": "5.9.3",
+				"passed": 51,
+				"failed": 0
+			},
+			{
+				"angular": "21.2.25",
+				"typescript": "5.9.3",
+				"passed": 51,
+				"failed": 0
+			},
+			{
+				"angular": "22.2.1",
+				"typescript": "6.0.3",
+				"passed": 51,
+				"failed": 0
+			}
+		]
+	},
+	"previousLocalResponseSizes": {
+		"get_index_status": 19291,
+		"find_entities": 30912,
+		"find_entities: injection requests": 32062,
+		"resolve_provider": 16693
+	},
+	"comparisonNotes": [
+		"Prior sizes were measured locally on the same snapshot with v0.1.0. Search now excludes owner-matched declaration members by default. Provider queries select one unit.",
+		"End-to-end agent latency and model-token consumption must be retested in the client.",
+		"The old snapshot reports stale because its TypeScript source input manifest was incomplete; the source-tracking fix requires explicit reindexing for fresh evidence."
+	]
+}

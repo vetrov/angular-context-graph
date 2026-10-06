@@ -42,13 +42,29 @@ JSON is written to stdout and progress/errors to stderr. Index exit code **2** m
 | `get_relationships`      | Primitive observations, source occurrences, uncertainty, and evidence IDs.                                                                                                                 |
 | `explain_dependency`     | Bounded directed evidence paths across template, TS, DI, provider, and framework relations.                                                                                                |
 | `resolve_provider`       | Request plus explicit injector context: lookup trace, selected/candidate registrations, and implementation/alias/factory evidence.                                                         |
+| `explain_injection`      | Class/service provider scopes, explicit dependencies, nested class-provider dependencies and value tokens, plus shared-registration evidence with its component.                           |
 | `get_feature_context`    | Bounded application/route/component neighborhood.                                                                                                                                          |
 | `analyze_impact`         | Direct users and reverse evidence paths, distinguishing possible runtime effects.                                                                                                          |
 | `find_unused_candidates` | Usage exclusions and candidates blocked by incomplete coverage; no global unused verdict.                                                                                                  |
 | `get_source_evidence`    | A captured original source span, at most 1,000 UTF-16 characters, keyed by observation or occurrence ID.                                                                                   |
 | `get_index_status`       | Snapshot, freshness, unit metrics, missing units, and last job/failure.                                                                                                                    |
 
-Shared query options include `snapshotId`, `unitIds`, `contextId`, `types`, and `familyIds` where applicable. Lists accept `limit` (1–200) and an opaque `cursor` bound to the snapshot and filters. Traversals accept `maxDepth` (1–16), `maxNodes` (1–500), `maxEdges` (1–5,000), and `maxPaths` (1–20), with a 250 ms traversal budget. Truncation and traversal bounds are explicit. An empty bounded search does not prove absence.
+Responses default to `detail: "compact"`: source locations, evidence IDs, resolution/semantics, and per-unit coverage summaries remain; repeated compiler metadata and source snippets are omitted. Request `detail: "full"` for raw DTOs and the full coverage matrix. `get_source_evidence` always returns its captured snippet. Graph schema v2 is unchanged; response and cursor format is query v2.
+
+Shared query options include `snapshotId`, `unitIds` or `unit` (an exact unit name from status), `contextId`, `types`, and `familyIds` where applicable. Most queries retain all indexed units by default. `explain_injection` selects a unique default build when available and explicitly reports omitted variants; multiple units without a default require selection. Variants are never silently merged. Lists accept `limit` (1–200, default 20) and an opaque `cursor` bound to the snapshot, filters, and query version. Traversals accept `maxDepth` (1–16), `maxNodes` (1–500), `maxEdges` (1–5,000), and `maxPaths` (1–20), with a 250 ms traversal budget. Truncation and traversal bounds are explicit. An empty bounded search does not prove absence.
+
+Search uses SQL filtering and pagination, ranks exact names first, and supports `match: "exact"`, `roles: ["Service"]`, and `kinds: ["Service"]` as an alias for the service role on a Class. Declaration members match their owner's name only with `includeMembers: true`; explicit occurrence/context searches still match their owners.
+
+Freshness checks deduplicate shared inputs across variants. A long-lived MCP server reuses an input checkpoint for at most one second; `checkedAt`, `checkMode`, `ageMs`, and `maxAgeMs` disclose this. Pass `freshness: "verify"` to force a current check; status always verifies. Snapshot changes invalidate cached manifests/checkpoints, and last-job failures are checked on every call.
+
+For a DI question, start with one focused query:
+
+```sh
+node src/cli.mjs query explain_injection --workspace /path/to/workplace-hub \
+    --args '{"name":"RequestListService","component":"Requests"}'
+```
+
+Use `entityId` instead of `name` when names are ambiguous. `component` or `contextId` selects a modeled **construction** context. Results retain unresolved/candidate dependencies, selected value providers, source locations relative to `sourceRoot`, and evidence IDs. Sharing means the same registration in the same modeled injector; runtime object identity is not observed. Nested class-provider dependencies default to depth 2, with bounds of depth 0–4, 1–8 contexts, and 1–100 dependencies (defaults 4 and 40). Cycles and limits are explicit. Alias/factory flows remain available through `resolve_provider` and primitive evidence queries.
 
 Dependency paths omit structural `CONTAINS` ownership unless you request it in `types`. Narrowing edge families keeps paths focused; result payloads have a 64,000-character budget with explicit truncation and continuation where possible.
 
@@ -86,13 +102,15 @@ Configure any stdio MCP client with an absolute executable path if Node is unava
 }
 ```
 
-The server exposes the ten queries above plus explicit `index_workspace` with `projects` and `full`. It indexes only its configured workspace. Read tools are annotated as read-only; indexing is a separate mutation. Input and output schemas are declared and validated, and successful tools return `structuredContent`. Stdout contains MCP frames only. The transport uses the official MCP TypeScript SDK v1 maintenance line (2025-11-25 protocol support); no client configuration is changed automatically.
+The server exposes the eleven queries above plus explicit `index_workspace` with `projects` and `full`. It indexes only its configured workspace. Read tools are annotated as read-only; indexing is a separate mutation. Input and output schemas are declared and validated, and successful tools return their complete result in `structuredContent`. The default `--text-mode json` also supplies compact JSON in text for client compatibility. Clients that consume structured results can opt into `--text-mode receipt` to eliminate the duplicate JSON and receive a short text receipt instead. A `detail: "full"` query also returns serialized JSON in text. This explicit compatibility option follows the [MCP structured-content guidance](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#structured-content). Stdout contains MCP frames only. Restart the MCP connection after updating the server so clients discover the new tool. The transport uses the official MCP TypeScript SDK v1 maintenance line (2025-11-25 protocol support); no client configuration is changed automatically.
 
 ## Persistence and uncertainty
 
 Snapshots are staged and published in one SQLite transaction. Foreign keys prevent dangling endpoints. Indexing has one writer, while queries remain on an immutable snapshot. Compiler or normalization failure leaves the previous snapshot available with stale state and failure diagnostics. A dead writer's lock is recoverable on the next indexing run. Every selected unit is analyzed in a separate compiler process, using one shared Angular/TS program within that process.
 
 Source/resource reads, config glob directory membership, failed resolution probes, real paths, package metadata, and ancestor configs/lockfiles participate in invalidation. Source/template edits, additions, deletions, renames, config changes, and lockfile changes are tested against full rebuilds. Unit-level recomputation is deliberate; there is no watcher or fine-grained pass cache in this MVP.
+
+The query update fixes TypeScript reads that bypassed `host.readFile`: original compiler source text is now validated and fingerprinted through `getSourceFile`, including declaration files. Earlier snapshots remain readable but report an outdated extractor until explicitly reindexed. Query/transport-only code changes no longer invalidate extraction fingerprints.
 
 Schema v2 keeps declaration, occurrence, context, and evidence layers separate. A central registry assigns workspace-qualified IDs and saves the legacy migration map. Angular/TS declarations share identities; placements and observations remain unit-specific. IDs are stable for unchanged snapshots. Move/rename/offset migration and merged-symbol improvements remain future work. Colliding prototype class identities fail explicitly.
 
@@ -118,3 +136,5 @@ Build variants have distinct identities. File replacements and custom resource-t
 The [MVP implementation decisions](docs/mvp.md) explain the architecture and lessons from [CodeGraphContext](https://github.com/CodeGraphContext/CodeGraphContext) and [trace-mcp](https://github.com/nikolai-vysotskyi/trace-mcp). [Prototype notes](docs/prototype.md) preserve the earlier extraction usage and validation history. Legacy invocations such as `node src/cli.mjs --project fixtures/tsconfig.json --component FooComponent` still work; `extract` is also an explicit command.
 
 To reproduce the source-mode Workplace Hub query proof after indexing it, run `node scripts/verify-demo.mjs --workspace /path/to/workplace-hub --db /path/to/index.sqlite`. It checks template-handler evidence, contextual facade selection, the connected DI path, and preservation of the 402 known unrepresented template occurrences.
+
+`node scripts/benchmark-queries.mjs --workspace /path/to/workplace-hub --db /path/to/index.sqlite` measures compact queries and verifies the RequestListService DI answer without compiling or writing the database. Close active SQLite connections first so the database has no WAL. [Query validation](docs/query-validation.json) records local measurements; these are JSON sizes and query timings, not model-token or agent-latency claims.

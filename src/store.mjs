@@ -87,6 +87,131 @@ export class GraphStore {
 			.all(snapshot, ...filter.args)
 			.map((row) => JSON.parse(row.data));
 	}
+	searchEntities(snapshot, unitIds, options = {}, offset = 0, limit = 51) {
+		const predicates = ['e.snapshot=?'];
+		const args = [snapshot];
+		if (unitIds) {
+			predicates.push(`e.unit IN (${unitIds.map(() => '?').join(',')})`);
+			args.push(...unitIds);
+		}
+		if (options.kinds?.length) {
+			const placeholders = options.kinds.map(() => '?').join(',');
+			predicates.push(
+				options.kinds.includes('Service')
+					? `(e.kind IN (${placeholders}) OR
+				(e.kind='Class' AND EXISTS (SELECT 1 FROM json_each(e.data,'$.roles') WHERE value='Service')))`
+					: `e.kind IN (${placeholders})`,
+			);
+			args.push(...options.kinds);
+		} else {
+			// Skip the large occurrence/evidence population before parsing declaration JSON.
+			predicates.push(
+				"e.kind NOT IN ('SourceOccurrence','ExpressionSite','BindingSite','PipeSite','ElementSite','InjectionRequest','InjectionResolution','ProviderRegistration','ScopeDefinition','Query','ProjectionSlot','HostBinding','HostListener','RouteDefinition','Template','AnalysisIssue','CoverageRecord')",
+			);
+			predicates.push("json_extract(e.data,'$.layer') IN ('declaration','context')");
+		}
+		if (options.roles?.length) {
+			predicates.push(
+				`EXISTS (SELECT 1 FROM json_each(e.data,'$.roles') WHERE value IN (${options.roles.map(() => '?').join(',')}))`,
+			);
+			args.push(...options.roles);
+		}
+		if (options.file) {
+			predicates.push('instr(e.file,?)>0');
+			args.push(options.file);
+		}
+		const text = (options.text ?? '').toLowerCase();
+		const fields = [
+			"coalesce(e.name,'')",
+			'e.id',
+			"coalesce(json_extract(e.data,'$.publicName'),'')",
+			"coalesce(json_extract(e.data,'$.path'),'')",
+			"coalesce(json_extract(e.data,'$.selector'),'')",
+		];
+		const contextual = "json_extract(e.data,'$.layer') IN ('context','occurrence','evidence')";
+		if (text) {
+			const match = (field) =>
+				options.match === 'exact' ? `lower(${field})=?` : `instr(lower(${field}),?)>0`;
+			const ownerFields = ["coalesce(o.name,'')", "coalesce(c.name,'')"];
+			predicates.push(
+				`(${fields.map(match).join(' OR ')} OR (${options.includeMembers ? '1' : contextual} AND (${ownerFields.map(match).join(' OR ')})))`,
+			);
+			args.push(...Array(fields.length + ownerFields.length).fill(text));
+		}
+		const rows = this.db
+			.prepare(
+				`
+			WITH matches AS (
+				SELECT e.unit,e.id,e.name,
+					CASE WHEN lower(e.name)=? THEN 0 WHEN substr(lower(e.name),1,length(?))=? THEN 1 ELSE 2 END rank
+				FROM entities e
+				${text ? "LEFT JOIN entities o ON o.snapshot=e.snapshot AND o.unit=e.unit AND o.id=json_extract(e.data,'$.owner') LEFT JOIN entities c ON c.snapshot=e.snapshot AND c.unit=e.unit AND c.id=coalesce(json_extract(e.data,'$.component'),json_extract(e.data,'$.classOwner'))" : ''}
+				WHERE ${predicates.join(' AND ')}
+			), grouped AS (
+				SELECT id,min(unit) unit,json_group_array(unit) units,min(rank) rank,min(name) name FROM matches GROUP BY id
+			)
+			SELECT e.data,g.units FROM grouped g JOIN entities e ON e.snapshot=? AND e.unit=g.unit AND e.id=g.id
+				ORDER BY g.rank,CASE WHEN e.kind IN ('Class','Component','Directive','Pipe') THEN 0 ELSE 1 END,lower(g.name),g.id LIMIT ? OFFSET ?
+		`,
+			)
+			.all(text, text, text, ...args, snapshot, limit, offset);
+		return rows.map((row) => {
+			const node = JSON.parse(row.data);
+			const units = JSON.parse(row.units).sort();
+			const owner = node.owner
+				? this.entity(snapshot, node.owner, [node.compilationUnitId])[0]
+				: null;
+			const componentId = node.component ?? node.classOwner;
+			const component = componentId
+				? this.entity(snapshot, componentId, [node.compilationUnitId])[0]
+				: null;
+			return {
+				...node,
+				ownerName: owner?.name ?? null,
+				componentName: component?.name ?? null,
+				unitIds: units,
+			};
+		});
+	}
+	relatedEntities(snapshot, unitIds, kind, field, ids) {
+		if (!['classOwner', 'owner', 'component', 'classIds', 'definitions'].includes(field))
+			throw new Error('Unsupported entity relation filter');
+		if (!ids.length) return [];
+		const filter = unitFilter(unitIds);
+		const array = ['classIds', 'definitions'].includes(field);
+		const match = array
+			? `EXISTS (SELECT 1 FROM json_each(data,'$.${field}') WHERE value IN (${ids.map(() => '?').join(',')}))`
+			: `json_extract(data,'$.${field}') IN (${ids.map(() => '?').join(',')})`;
+		return this.db
+			.prepare(
+				`SELECT data FROM entities WHERE snapshot=? AND kind=?${filter.sql} AND ${match} ORDER BY id`,
+			)
+			.all(snapshot, kind, ...filter.args, ...ids)
+			.map((row) => JSON.parse(row.data));
+	}
+	resolution(snapshot, unit, request, context) {
+		const edge = this.relationships(snapshot, request, 'outgoing', [unit]).find(
+			(e) => e.type === 'RESOLVES_IN' && e.contextId === context,
+		);
+		if (!edge) return null;
+		const node = this.entity(snapshot, edge.to, [unit])[0];
+		const providerNodes = this.relationships(snapshot, node.id, 'outgoing', [unit])
+			.filter((e) => ['SELECTS_PROVIDER', 'CANDIDATE_PROVIDER'].includes(e.type))
+			.map((e) => this.entity(snapshot, e.to, [unit])[0]);
+		const definitions = node.trace?.at(-1)?.definitions ?? [];
+		providerNodes.sort(
+			(a, b) =>
+				definitions.indexOf(a.owner) - definitions.indexOf(b.owner) ||
+				a.ordinal - b.ordinal ||
+				a.id.localeCompare(b.id),
+		);
+		const providers = providerNodes.map((p) => p.id);
+		return {
+			...node,
+			providers,
+			foundContext: providers.length ? node.trace?.at(-1)?.context : null,
+		};
+	}
 	entity(snapshot, id, unitIds) {
 		const filter = unitFilter(unitIds);
 		return this.db

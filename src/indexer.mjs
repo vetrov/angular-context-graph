@@ -7,15 +7,25 @@ import { normalizeGraph, SCHEMA_VERSION, EXTRACTOR_VERSION, workspaceId, idFor }
 import { discoverUnits } from './units.mjs';
 
 const sourceDir = fileURLToPath(new URL('.', import.meta.url));
+const extractionFiles = [
+	'adapter.mjs',
+	'angular-core.mjs',
+	'extract.mjs',
+	'index-worker.mjs',
+	'inputs.mjs',
+	'model.mjs',
+	'typescript.mjs',
+	'units.mjs',
+];
 export const extractorFingerprint = () =>
 	hash(
-		fs
-			.readdirSync(sourceDir)
-			.filter((n) => n.endsWith('.mjs'))
+		extractionFiles
+			.slice()
 			.sort()
 			.map((n) => fs.readFileSync(path.join(sourceDir, n), 'utf8'))
 			.join('\n'),
 	);
+export const isCompatibleExtractor = (fingerprint) => fingerprint === extractorFingerprint();
 export function workerExtract(project, { signal, timeoutMs = 120000 } = {}) {
 	return new Promise((resolve, reject) => {
 		const child = fork(new URL('./index-worker.mjs', import.meta.url), [], {
@@ -122,7 +132,7 @@ export async function indexWorkspace(
 			if (
 				!full &&
 				old &&
-				previous.extractorFingerprint === fingerprint &&
+				isCompatibleExtractor(previous.extractorFingerprint) &&
 				!changedInputs(old.raw.indexInputs).length
 			) {
 				units.push({ ...old, normalized: undefined });

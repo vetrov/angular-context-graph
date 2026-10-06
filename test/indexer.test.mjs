@@ -7,7 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { GraphStore } from '../src/store.mjs';
-import { indexWorkspace, acquireWriter } from '../src/indexer.mjs';
+import {
+	indexWorkspace,
+	acquireWriter,
+	isCompatibleExtractor,
+	extractorFingerprint,
+} from '../src/indexer.mjs';
 import { QueryService } from '../src/queries.mjs';
 import { query, RESPONSE_SCHEMA } from '../src/api.mjs';
 import { validateGraph } from '../src/model.mjs';
@@ -149,6 +154,119 @@ test('opaque lookup regions keep candidates and unresolved results', () => {
 	assert.equal(answer.results[0].status, 'unresolved');
 	assert.match(answer.results[0].reason, /Unknown/);
 });
+test('compact answers preserve evidence and uncertainty while raw DTOs and full coverage are opt-in', () => {
+	const options = { id: named('Leaf', 'Component').id, types: ['TEMPLATE_CALLS'] };
+	const small = query(service, 'get_relationships', options);
+	const full = query(service, 'get_relationships', { ...options, detail: 'full' });
+	assert.equal(small.coverage.length, 1);
+	assert.equal(full.coverage.length, 26);
+	assert.deepEqual(
+		small.results.map((r) => r.id),
+		full.results.map((r) => r.id),
+	);
+	assert.equal(small.results[0].sourceSpan, undefined);
+	assert.equal(small.results[0].versions, undefined);
+	assert.equal(small.results[0].location.uri, undefined);
+	assert.ok(small.results[0].location.file && small.results[0].location.line);
+	assert.ok(small.results[0].targetResolution && small.results[0].semantics);
+	assert.equal(full.results[0].sourceSpan, 'save');
+	assert.ok(full.results[0].versions);
+	assert.equal(
+		query(service, 'get_source_evidence', { id: small.results[0].id }).results[0].sourceSpan,
+		'save',
+	);
+	assert.ok(JSON.stringify(small).length < JSON.stringify(full).length / 2);
+});
+test('SQL search ranks exact names, filters Service roles, and expands members only when requested', () => {
+	const store = Object.create(coreStore);
+	store.entities = () => {
+		throw new Error('Search must not load the entire graph');
+	};
+	const qs = new QueryService(store, repo);
+	const first = query(qs, 'find_entities', { text: 'Leaf' });
+	assert.equal(first.results[0].name, 'Leaf');
+	assert.ok(first.results.some((r) => r.name === 'CtorLeaf'));
+	assert.ok(!first.results.some((r) => r.kind === 'Method'));
+	const exact = query(qs, 'find_entities', {
+		text: 'Leaf',
+		kinds: ['Component'],
+		match: 'exact',
+	});
+	assert.deepEqual(
+		exact.results.map((r) => r.name),
+		['Leaf'],
+	);
+	const members = query(qs, 'find_entities', {
+		text: 'Leaf',
+		kinds: ['Method'],
+		includeMembers: true,
+	});
+	assert.ok(members.results.some((r) => r.name === 'save'));
+	const role = query(qs, 'find_entities', { text: 'AutoService', roles: ['Service'] });
+	const kindAlias = query(qs, 'find_entities', { text: 'AutoService', kinds: ['Service'] });
+	assert.equal(role.results.length, 1);
+	assert.equal(role.results[0].kind, 'Class');
+	assert.deepEqual(kindAlias.results, role.results);
+	const requests = query(qs, 'find_entities', {
+		text: 'Leaf',
+		kinds: ['InjectionRequest'],
+		match: 'exact',
+	});
+	assert.ok(requests.results.some((r) => r.id === workerRequest.id));
+});
+test('injection explanation keeps view/content selections, unknowns, and explicit depth bounds', () => {
+	for (const [ctx, expected] of [
+		[view, 'ViewWorker'],
+		[content, 'LocalWorker'],
+	]) {
+		const answer = query(service, 'explain_injection', { name: 'Leaf', contextId: ctx.id });
+		const dependency = answer.results[0].dependencies.find(
+			(d) => d.requestId === workerRequest.id,
+		);
+		assert.equal(dependency.status, 'selected');
+		assert.equal(dependency.providers[0].implementation.name, expected);
+		assert.ok(dependency.evidenceIds.length);
+		assert.ok(answer.results[0].dependencies.some((d) => d.status === 'unresolved'));
+		assert.equal(answer.runtimeObserved, false);
+		assert.equal(answer.results[0].interpretation.runtimeObserved, false);
+	}
+	const bounded = query(service, 'explain_injection', {
+		name: 'Leaf',
+		contextId: view.id,
+		maxDependencies: 1,
+	});
+	assert.equal(bounded.truncated, true);
+	assert.equal(bounded.results[0].dependencies.length, 1);
+	const none = query(service, 'explain_injection', { name: 'PlainClass' });
+	assert.equal(none.results[0].status, 'no-modeled-context');
+	assert.throws(() => query(service, 'explain_injection', {}), /exactly one/);
+});
+test('indexed adjacency provider lookup preserves multi-registration order and avoids unit graph parsing', () => {
+	const many = normalized.entities.find(
+		(n) => n.kind === 'InjectionRequest' && nodes.get(n.token)?.name === 'MANY',
+	);
+	const expected = normalized.resolutions.find(
+		(r) => r.request === many.id && r.status === 'selected',
+	);
+	const store = Object.create(coreStore);
+	store.resolutions = () => {
+		throw new Error('Provider queries must not parse the unit graph');
+	};
+	const answer = query(new QueryService(store, repo), 'resolve_provider', {
+		requestId: many.id,
+		contextId: expected.context,
+	});
+	assert.deepEqual(
+		answer.results[0].providers.map((p) => p.registration.id),
+		expected.providers,
+	);
+	assert.equal(isCompatibleExtractor(extractorFingerprint()), true);
+	assert.equal(
+		isCompatibleExtractor('27bcd901be0bbef1ae80c5a6533a321084cca3f800e28a83199a6638c8295fd6'),
+		false,
+	);
+	assert.equal(isCompatibleExtractor('unrecognized-version'), false);
+});
 test('dependency paths join template handler, injected field, contextual provider and implementation', () => {
 	const answer = query(service, 'explain_dependency', {
 		sourceId: method('Leaf', 'save').id,
@@ -287,6 +405,130 @@ function temporaryWorkspace(name) {
 	fs.writeFileSync(path.join(root, 'page.html'), '<button (click)="save()">Save</button>');
 	return root;
 }
+test('one DI query explains nested value tokens and shared state; a parent override prevents sharing', async () => {
+	const root = temporaryWorkspace('di-query');
+	fs.writeFileSync(
+		path.join(root, 'di.ts'),
+		`import {Component,Injectable,InjectionToken,inject} from '@angular/core';
+import {bootstrapApplication} from '@angular/platform-browser';
+const LIST_KIND = new InjectionToken<string>('kind');
+@Injectable({providedIn:'root'}) export class ListQueryState { kind=inject(LIST_KIND); }
+@Injectable() export class RequestListService { query=inject(ListQueryState); }
+@Component({selector:'requests-page',standalone:true,template:'',providers:[{provide:LIST_KIND,useValue:'requests'},ListQueryState,RequestListService]})
+export class Requests { query=inject(ListQueryState); service=inject(RequestListService); }
+bootstrapApplication(Requests,{providers:[{provide:LIST_KIND,useValue:'root'}]});`,
+	);
+	fs.writeFileSync(
+		path.join(root, 'angular.json'),
+		JSON.stringify({
+			projects: {
+				app: {
+					architect: {
+						build: {
+							builder: '@angular/build:application',
+							options: { tsConfig: 'tsconfig.json' },
+							configurations: {
+								development: { optimization: false },
+								production: { optimization: true },
+							},
+						},
+					},
+				},
+			},
+		}),
+	);
+	const store = new GraphStore(path.join(root, '.angular-context-graph/index.sqlite'));
+	let clock = Date.now();
+	let manifestReads = 0;
+	const manifests = store.unitManifests.bind(store);
+	store.unitManifests = (...args) => {
+		manifestReads++;
+		return manifests(...args);
+	};
+	try {
+		await indexWorkspace(store, { workspace: root });
+		const qs = new QueryService(store, root, { now: () => clock });
+		const answer = query(qs, 'explain_injection', {
+			name: 'RequestListService',
+			component: 'Requests',
+		});
+		assert.equal(answer.unitSelection.mode, 'default-build');
+		assert.equal(answer.unitIds.length, 1);
+		assert.equal(answer.unitSelection.omitted.length, 2);
+		assert.equal(answer.freshness.status, 'fresh');
+		const result = answer.results[0];
+		assert.equal(result.providerScopes[0].scope.owner.name, 'Requests');
+		assert.equal(result.providerScopes[0].scope.kind, 'element');
+		const dependency = result.dependencies[0];
+		assert.equal(dependency.token.name, 'ListQueryState');
+		assert.equal(dependency.sharedWith[0].consumer.name, 'Requests');
+		assert.equal(
+			dependency.sharedWith[0].staticResult,
+			'same-registration-in-same-modeled-injector',
+		);
+		assert.equal(dependency.providerDependencies[0].dependencies[0].token.name, 'LIST_KIND');
+		assert.equal(
+			dependency.providerDependencies[0].dependencies[0].providers[0].value,
+			'requests',
+		);
+		assert.ok(dependency.location.line && dependency.evidenceIds.length);
+		assert.ok(JSON.stringify(answer).length < 14000);
+		assert.equal(
+			query(qs, 'explain_injection', { name: 'RequestListService' }).freshness.checkMode,
+			'cached',
+		);
+		assert.equal(manifestReads, 1);
+		const source = path.join(root, 'di.ts');
+		fs.writeFileSync(
+			source,
+			fs
+				.readFileSync(source, 'utf8')
+				.replace(
+					'query=inject(ListQueryState); }',
+					'query=inject(ListQueryState,{skipSelf:true}); }',
+				),
+		);
+		assert.equal(
+			query(qs, 'explain_injection', { name: 'RequestListService' }).freshness.status,
+			'fresh',
+		);
+		clock += 1001;
+		assert.equal(
+			query(qs, 'explain_injection', { name: 'RequestListService' }).freshness.status,
+			'stale',
+		);
+		assert.equal(query(qs, 'get_index_status').freshness.checkMode, 'verified');
+		await indexWorkspace(store, { workspace: root });
+		const different = query(qs, 'explain_injection', {
+			name: 'RequestListService',
+			component: 'Requests',
+		});
+		assert.equal(different.freshness.status, 'fresh');
+		assert.equal(different.results[0].dependencies[0].status, 'selected');
+		assert.deepEqual(different.results[0].dependencies[0].sharedWith, []);
+		assert.equal(
+			different.results[0].dependencies[0].providerDependencies[0].dependencies[0]
+				.providers[0].value,
+			'root',
+		);
+		assert.equal(manifestReads, 2);
+		const chosen = query(qs, 'find_entities', {
+			text: 'Requests',
+			kinds: ['Component'],
+			unit: 'app:build:development',
+		});
+		assert.equal(chosen.results[0].unitIds.length, 1);
+		assert.equal(chosen.unitSelection.mode, 'explicit-unit');
+		assert.throws(() => query(qs, 'find_entities', { unit: 'missing' }), /Unknown unit/);
+		assert.throws(
+			() =>
+				query(qs, 'find_entities', { unit: 'app:build:default', unitIds: answer.unitIds }),
+			/not both/,
+		);
+	} finally {
+		store.close();
+	}
+});
 test('a killed writer retains its snapshot, reports interruption and recovers its lock', async () => {
 	const root = temporaryWorkspace('crash');
 	const db = path.join(root, '.angular-context-graph/index.sqlite');
@@ -459,6 +701,11 @@ test('overlapping units share declarations without deduplicating observations or
 			projects: ['tsconfig.json', 'variant.json'],
 		});
 		const qs = new QueryService(store, root);
+		assert.equal(qs.get_index_status().results[0].recommendedUnitId, null);
+		assert.equal(
+			query(qs, 'explain_injection', { name: 'Page' }).results[0].status,
+			'unit-selection-required',
+		);
 		const page = qs.find_entities({ text: 'Page', kinds: ['Component'] }).results[0];
 		assert.equal(page.unitIds.length, 2);
 		const calls = qs.get_relationships({ id: page.id, types: ['TEMPLATE_CALLS'] }).results;
