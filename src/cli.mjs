@@ -10,7 +10,7 @@ import { QUERY_TOOLS, query } from './api.mjs';
 const help = `angular-context-graph index [--workspace path] [--project tsconfig ...] [--full]
 angular-context-graph status [--workspace path] [--db path]
 angular-context-graph query <tool> [--args '{"id":"..."}'] [--workspace path] [--db path]
-angular-context-graph mcp [--workspace path] [--db path] [--text-mode receipt|json]
+angular-context-graph mcp [--workspace path] [--db path]
 angular-context-graph export [--snapshot id] [--workspace path] [--db path]
 angular-context-graph import --input snapshot.json [--workspace path] [--db path]
 angular-context-graph extract --project tsconfig [prototype extraction flags]
@@ -44,7 +44,6 @@ async function main() {
 			snapshot: { type: 'string' },
 			input: { type: 'string' },
 			help: { type: 'boolean' },
-			'text-mode': { type: 'string' },
 		},
 	});
 	if (values.help) {
@@ -102,7 +101,7 @@ async function main() {
 			output(service.get_index_status());
 		} else if (command === 'mcp') {
 			const { serveMcp } = await import('./mcp.mjs');
-			const server = await serveMcp(store, workspace, { textMode: values['text-mode'] });
+			const server = await serveMcp(store, workspace);
 			keepOpen = true;
 			let closed = false;
 			const close = async () => {

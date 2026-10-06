@@ -22,16 +22,7 @@ test('stdio MCP handshake, schema-valid query, error, explicit index and restart
 	});
 	const transport = new StdioClientTransport({
 		command: process.execPath,
-		args: [
-			path.join(repo, 'src/cli.mjs'),
-			'mcp',
-			'--workspace',
-			root,
-			'--db',
-			db,
-			'--text-mode',
-			'receipt',
-		],
+		args: [path.join(repo, 'src/cli.mjs'), 'mcp', '--workspace', root, '--db', db],
 		stderr: 'pipe',
 	});
 	const client = new Client({ name: 'acceptance-client', version: '1.0.0' });
@@ -77,24 +68,18 @@ test('stdio MCP handshake, schema-valid query, error, explicit index and restart
 			RESPONSE_SCHEMA.parse(di.structuredContent).results[0].entity.name,
 			'FooComponent',
 		);
-		const compatibility = new Client({ name: 'text-compatibility-client', version: '1.0.0' });
-		try {
-			await compatibility.connect(
-				new StdioClientTransport({
-					command: process.execPath,
-					args: [path.join(repo, 'src/cli.mjs'), 'mcp', '--workspace', root, '--db', db],
-					stderr: 'ignore',
-				}),
-			);
-			const text = await compatibility.callTool({
-				name: 'find_entities',
-				arguments: { text: 'FooComponent', kinds: ['Component'] },
-			});
-			assert.deepEqual(JSON.parse(text.content[0].text), text.structuredContent);
-			assert.deepEqual(text.structuredContent.results, response.results);
-		} finally {
-			await compatibility.close();
-		}
+		const full = await client.callTool({
+			name: 'find_entities',
+			arguments: { text: 'FooComponent', kinds: ['Component'], detail: 'full' },
+		});
+		const fullResponse = RESPONSE_SCHEMA.parse(full.structuredContent);
+		assert.ok(full.content[0].text.length < 300);
+		assert.ok(!full.content[0].text.startsWith('{'));
+		assert.equal(full.content[0].text, found.content[0].text);
+		assert.ok(fullResponse.results[0].versions);
+		assert.equal(response.results[0].versions, undefined);
+		assert.equal(fullResponse.coverage.length, 26);
+		assert.equal(response.coverage.length, 1);
 		const store = new GraphStore(db);
 		try {
 			const expected = new QueryService(store, root).find_entities({
